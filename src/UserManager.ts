@@ -1,63 +1,75 @@
-import type { OutgoingMessage } from "./messages/outgoingMessages.js";
-import type { connection } from "websocket";
+import type { connection as WSConnection } from "websocket";
 
-interface User{
-    name : string,
-    id : string,
-    conn :connection
-}
-interface Room{
-    users : User[]
+export interface User {
+  id: string;
+  name: string;
+  ws: WSConnection;
 }
 
-export class UserManager{
-    private rooms : Map<string, Room>;
+export interface Room {
+  users: User[];
+}
 
-    constructor(){
-        this.rooms = new Map<string, Room>();
+export class UserManager {
+  private rooms: Map<string, Room>;
+
+  constructor() {
+    this.rooms = new Map<string, Room>();
+  }
+
+  addUser(name: string, userId: string, roomId: string, ws: WSConnection) {
+    if (!this.rooms.get(roomId)) {
+      this.rooms.set(roomId, { users: [] });
     }
 
-    addUser(name: string, userId : string, roomId: string, socket : connection){
-        if(!this.rooms.get(roomId)){
-            this.rooms.set(roomId, {
-                users : []
-            })
-        }
+    const room = this.rooms.get(roomId)!;
 
-        //add new user into the room
-        this.rooms.get(roomId)?.users.push({
-            id : userId,
-            name,
-            conn : socket
-        })
+    // avoid duplicates by userId
+    if (!room.users.find((u) => u.id === userId)) {
+      room.users.push({ id: userId, name, ws });
     }
+  }
 
-    removeUser(roomId : string, userId : string){
-        const users = this.rooms.get(roomId)?.users;  //get the user
-        if(users){
-            users.filter(({id}) => id !== userId);
-        }
+  removeUser(userId: string, roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    room.users = room.users.filter((u) => u.id !== userId);
+    if (room.users.length === 0) {
+      this.rooms.delete(roomId);
     }
+  }
 
-    getUser(roomId : string, userId : string) : User | null{
-        const user = this.rooms.get(roomId)?.users.find(({id})=> id === userId);
-        return user ?? null;
+  getUser(userId: string, roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return undefined;
+    return room.users.find((u) => u.id === userId);
+  }
+
+  // Broadcast to everyone in the room except (optional) senderId
+  broadcast<T extends object>(roomId: string, senderId: string | null, payload: T) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    const json = JSON.stringify(payload);
+    for (const u of room.users) {
+      if (senderId && u.id === senderId) continue;
+      try {
+        u.ws.sendUTF(json);
+      } catch {
+        // ignore send errors; optionally clean up here
+      }
     }
+  }
 
-    broadcast(roomId : string, userId: string,  message : OutgoingMessage){
-        const user = this.getUser(roomId, userId);
-        if(!user){
-            console.error("User not found")
-            return;
-        }
-        const room = this.rooms.get(roomId);
-        if(!room){
-            console.error("Room not found")
-            return;
-        }
-
-        room.users.forEach(({conn})=>{
-            conn.sendUTF(JSON.stringify(message))
-        })
+  // Remove a closed connection from any room it belonged to
+  removeConnection(ws: WSConnection) {
+    for (const [roomId, room] of this.rooms.entries()) {
+      const before = room.users.length;
+      room.users = room.users.filter((u) => u.ws !== ws);
+      if (before !== room.users.length && room.users.length === 0) {
+        this.rooms.delete(roomId);
+      }
     }
+  }
 }

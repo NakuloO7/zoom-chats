@@ -1,115 +1,131 @@
-import {server as WebSocketServer} from "websocket";
-import type { connection } from "websocket";
-import  http from 'http';
-import { SupportedMessage, type IncomingMessage } from "./messages/incomingMessages.js";
-import { SupportedMessage as OutgoingSupportMessage, type OutgoingMessage} from "./messages/outgoingMessages.js";
+import pkg from "websocket"; // CommonJS package: import default, then destructure value exports
+import type { connection as WSConnection } from "websocket"; // <-- instance type, not typeof
+import http from "http";
+
+import {
+  SupportedMessage as InType,
+  type IncomingMessage,
+} from "./messages/incomingMessages.js";
+
+import {
+  SupportedMessage as OutType,
+  type OutgoingMessage,
+} from "./messages/outgoingMessages.js";
+
 import { UserManager } from "./UserManager.js";
 import { InMemoryStore } from "./inMemoryStore.js";
 
-const  server = http.createServer(function(request : any, response : any) {
-    console.log((new Date()) + ' Received request for ' + request.url);
-    response.writeHead(404);
-    response.end();
+const { server: WebSocketServer } = pkg;
+
+const server = http.createServer((request: any, response: any) => {
+  console.log(new Date(), "HTTP request for", request.url);
+  response.writeHead(404);
+  response.end();
 });
 
 const userManager = new UserManager();
 const store = new InMemoryStore();
 
-server.listen(3000, function() {
-    console.log((new Date()) + ' Server is listening on port 3000');
+const PORT = 3000;
+server.listen(PORT, () => {
+  console.log(new Date(), `Server listening on :${PORT}`);
 });
 
 const wsServer = new WebSocketServer({
-    httpServer: server,
-    autoAcceptConnections: true
+  httpServer: server,
+  autoAcceptConnections: false,
 });
 
-function originIsAllowed(origin : string) {
-  // put logic here to detect whether the specified origin is allowed.
+function originIsAllowed(_origin: string) {
+  // tighten for production
   return true;
 }
 
-wsServer.on('request', function(request) {
-    if (!originIsAllowed(request.origin)) {
-      // Make sure we only accept requests from an allowed origin
-      request.reject();
-      console.log((new Date()) + ' Connection from origin ' + request.origin + ' rejected.');
-      return;
+wsServer.on("request", (request) => {
+  if (!originIsAllowed(request.origin)) {
+    request.reject();
+    console.log(new Date(), "Rejected WS from", request.origin);
+    return;
+  }
+
+  // Accept with `null` unless your client explicitly requests a subprotocol
+  const conn = request.accept(null, request.origin);
+  console.log(new Date(), "WebSocket accepted from", request.origin);
+
+  conn.on("message", (message) => {
+    if (message.type !== "utf8") return; // only handle text frames
+
+    try {
+      const parsed = JSON.parse(message.utf8Data as string);
+      // TS now knows conn is an instance of `connection`
+      messageRouter(conn, parsed);
+    } catch (err) {
+      console.error("Bad JSON from client:", err);
     }
-    
-    const connection = request.accept(null, request.origin);
-    console.log((new Date()) + ' Connection accepted.');
-    connection.on('message', function(message) {
-        ///todo add rate limiting logic
-        if (message.type === 'utf8') {
-            try {
-                messageHandler(connection, JSON.parse(message.utf8Data));
-            } catch (error) {
-                
-            }
-            // console.log('Received Message: ' + message.utf8Data);
-            // connection.sendUTF(message.utf8Data);
-        }
-       
-    });
-    connection.on('close', function(reasonCode, description) {
-        console.log((new Date()) + ' Peer ' + connection.remoteAddress + ' disconnected.');
-    });
+  });
+
+  conn.on("close", () => {
+    userManager.removeConnection(conn);
+    console.log(new Date(), "Peer disconnected");
+  });
 });
 
+// ---- Message routing ----
 
-//type => JOIN_ROOM, message =>  InitMessage ... and so on
-//check how this is handled in messages.ts
+function messageRouter(ws: WSConnection, message: IncomingMessage) {
+  if (message.type === InType.joinRoom) {
+    const { name, userId, roomId } = message.payload;
+    userManager.addUser(name, userId, roomId, ws);
+    return;
+  }
 
-function messageHandler(ws : connection, message : IncomingMessage){
-    if(message.type == SupportedMessage.joinRoom){
-        const payload = message.payload;
-        userManager.addUser(payload.name, payload.userId, payload.roomId, ws);
+  if (message.type === InType.sendMessage) {
+    const { userId, roomId, message: body } = message.payload;
+    const user = userManager.getUser(userId, roomId);
+    if (!user) {
+      console.error("User not found in room for SEND_MESSAGE");
+      return;
     }
 
-    if(message.type === SupportedMessage.sendMessage){
-        const payload = message.payload;
-        const user = userManager.getUser(payload.userId, payload.roomId);
-        if(!user){
-            console.error("User not found in the bd")
-            return;
-        }
+    const chat = store.addChat(userId, user.name, roomId, body);
 
-        let chat = store.addChat(payload.userId, user.name, payload.roomId, payload.message);
-        if(!chat ){
-            return;
-        }
-        const outgoingPayload : OutgoingMessage = {
-            type : OutgoingSupportMessage.AddChat,
-            payload : {
-                chatId : chat.id,
-                roomId : payload.roomId,
-                message : payload.message,
-                name : user.name,
-                upvotes : 0,
-            } 
+    const outgoing: OutgoingMessage = {
+      type: OutType.AddChat,
+      payload: {
+        chatId: chat.id,
+        roomId,
+        message: body,
+        name: user.name,
+        upvotes: 0,
+      },
+    };
 
-        }
+    // broadcast to everyone EXCEPT sender
+    userManager.broadcast(roomId, userId, outgoing);
+    return;
+  }
 
-        userManager.broadcast(payload.roomId, payload.userId, outgoingPayload);
-    }
-    //add broadCast logic here
+  if (message.type === InType.upVoteMessage) {
+    const { userId, roomId, chatId } = message.payload;
+    const chat = store.upVote(userId, roomId, chatId);
+    if (!chat) return;
 
-    if(message.type === SupportedMessage.upVoteMessage){
-        const payload = message.payload;
-        const chat = store.upVote(payload.userId, payload.roomId, payload.chatId);
-        if(!chat){
-            return;
-        }
-        const outgoingPayload : OutgoingMessage = {
-            type : OutgoingSupportMessage.UpdateChat,
-            payload : {
-                chatId : payload.chatId,
-                roomId : payload.roomId,
-                upvotes : chat.upVotes.length
-            } 
+    const outgoing: OutgoingMessage = {
+      type: OutType.UpdateChat,
+      payload: {
+        chatId,
+        roomId,
+        upvotes: chat.upVotes.length,
+      },
+    };
 
-        } 
-        userManager.broadcast(payload.roomId, payload.userId, outgoingPayload);
-    }
+    // broadcast to everyone EXCEPT the upvoter
+    userManager.broadcast(roomId, userId, outgoing);
+
+    // optional milestones:
+    // if (chat.upVotes.length === 3) { /* highlight logic */ }
+    // if (chat.upVotes.length === 10) { /* admin alert logic */ }
+
+    return;
+  }
 }
