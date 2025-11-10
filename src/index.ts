@@ -101,7 +101,7 @@ function messageRouter(ws: WSConnection, message: IncomingMessage) {
     };
 
     // broadcast to everyone EXCEPT sender
-    userManager.broadcast(roomId, userId, outgoing);
+    userManager.broadcast(roomId, null, outgoing);
     return;
   }
 
