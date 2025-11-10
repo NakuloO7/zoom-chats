@@ -1,4 +1,5 @@
-import { connection, server as WebSocketServer } from "websocket";
+import {server as WebSocketServer} from "websocket";
+import type { connection } from "websocket";
 import  http from 'http';
 import { SupportedMessage, type IncomingMessage } from "./messages/incomingMessages.js";
 import { SupportedMessage as OutgoingSupportMessage, type OutgoingMessage} from "./messages/outgoingMessages.js";
@@ -14,13 +15,13 @@ const  server = http.createServer(function(request : any, response : any) {
 const userManager = new UserManager();
 const store = new InMemoryStore();
 
-server.listen(8080, function() {
-    console.log((new Date()) + ' Server is listening on port 8080');
+server.listen(3000, function() {
+    console.log((new Date()) + ' Server is listening on port 3000');
 });
 
 const wsServer = new WebSocketServer({
     httpServer: server,
-    autoAcceptConnections: false
+    autoAcceptConnections: true
 });
 
 function originIsAllowed(origin : string) {
@@ -36,7 +37,7 @@ wsServer.on('request', function(request) {
       return;
     }
     
-    const connection = request.accept('echo-protocol', request.origin);
+    const connection = request.accept(null, request.origin);
     console.log((new Date()) + ' Connection accepted.');
     connection.on('message', function(message) {
         ///todo add rate limiting logic

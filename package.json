@@ -11,7 +11,7 @@
   },
   "keywords": [],
   "dependencies": {
-    "websocket": "^1.0.35",
+    "websocket": "^1.0.34",
     "zod": "^4.1.12"
   },
   "devDependencies": {
